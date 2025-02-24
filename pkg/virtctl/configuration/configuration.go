@@ -46,8 +46,10 @@ func run(cmd *cobra.Command, _ []string) error {
 
 	kv := kvList.Items[0]
 
-	hostDeviceList := []string{}
-	gpuDeviceList := []string{}
+	var (
+		hostDeviceList []string
+		gpuDeviceList  []string
+	)
 
 	if kv.Spec.Configuration.PermittedHostDevices != nil {
 		for _, hd := range kv.Spec.Configuration.PermittedHostDevices.PciHostDevices {
