@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfield "k8s.io/apimachinery/pkg/util/validation/field"
 
-	"kubevirt.io/client-go/api"
+	"kubevirt.io/kubevirt/pkg/libvmi"
 
 	v1 "kubevirt.io/api/core/v1"
 
@@ -35,13 +35,18 @@ import (
 
 var _ = Describe("Validating network binding combinations", func() {
 	It("network interface has both binding plugin and interface binding method", func() {
-		vm := api.NewMinimalVMI("testvm")
-		vm.Spec.Domain.Devices.Interfaces = []v1.Interface{{
-			Name:                   "foo",
-			InterfaceBindingMethod: v1.InterfaceBindingMethod{Bridge: &v1.InterfaceBridge{}},
-			Binding:                &v1.PluginBinding{Name: "boo"},
-		}}
-		vm.Spec.Networks = []v1.Network{{Name: "foo", NetworkSource: v1.NetworkSource{Pod: &v1.PodNetwork{}}}}
+		vm := libvmi.New(
+			libvmi.WithName("testvm"),
+			libvmi.WithInterface(v1.Interface{
+				Name:                   "foo",
+				InterfaceBindingMethod: v1.InterfaceBindingMethod{Bridge: &v1.InterfaceBridge{}},
+				Binding:                &v1.PluginBinding{Name: "boo"},
+			}),
+			libvmi.WithNetwork(&v1.Network{
+				Name:          "foo",
+				NetworkSource: v1.NetworkSource{Pod: &v1.PodNetwork{}},
+			}),
+		)
 		clusterConfig := stubClusterConfigChecker{bridgeBindingOnPodNetEnabled: true, bindingPluginFGEnabled: true}
 		validator := admitter.NewValidator(k8sfield.NewPath("fake"), &vm.Spec, clusterConfig)
 		Expect(validator.Validate()).To(
@@ -53,24 +58,34 @@ var _ = Describe("Validating network binding combinations", func() {
 	})
 
 	It("network interface has only plugin binding", func() {
-		vm := api.NewMinimalVMI("testvm")
-		vm.Spec.Domain.Devices.Interfaces = []v1.Interface{{
-			Name:    "foo",
-			Binding: &v1.PluginBinding{Name: "boo"},
-		}}
-		vm.Spec.Networks = []v1.Network{{Name: "foo", NetworkSource: v1.NetworkSource{Pod: &v1.PodNetwork{}}}}
+		vm := libvmi.New(
+			libvmi.WithName("testvm"),
+			libvmi.WithInterface(v1.Interface{
+				Name:    "foo",
+				Binding: &v1.PluginBinding{Name: "boo"},
+			}),
+			libvmi.WithNetwork(&v1.Network{
+				Name:          "foo",
+				NetworkSource: v1.NetworkSource{Pod: &v1.PodNetwork{}},
+			}),
+		)
 		clusterConfig := stubClusterConfigChecker{bindingPluginFGEnabled: true}
 		validator := admitter.NewValidator(k8sfield.NewPath("fake"), &vm.Spec, clusterConfig)
 		Expect(validator.Validate()).To(BeEmpty())
 	})
 
 	It("network interface has only binding method", func() {
-		vm := api.NewMinimalVMI("testvm")
-		vm.Spec.Domain.Devices.Interfaces = []v1.Interface{{
-			Name:                   "foo",
-			InterfaceBindingMethod: v1.InterfaceBindingMethod{Bridge: &v1.InterfaceBridge{}},
-		}}
-		vm.Spec.Networks = []v1.Network{{Name: "foo", NetworkSource: v1.NetworkSource{Pod: &v1.PodNetwork{}}}}
+		vm := libvmi.New(
+			libvmi.WithName("testvm"),
+			libvmi.WithNetwork(&v1.Network{
+				Name:          "foo",
+				NetworkSource: v1.NetworkSource{Pod: &v1.PodNetwork{}},
+			}),
+			libvmi.WithInterface(v1.Interface{
+				Name:                   "foo",
+				InterfaceBindingMethod: v1.InterfaceBindingMethod{Bridge: &v1.InterfaceBridge{}},
+			}),
+		)
 		clusterConfig := stubClusterConfigChecker{bridgeBindingOnPodNetEnabled: true}
 		validator := admitter.NewValidator(k8sfield.NewPath("fake"), &vm.Spec, clusterConfig)
 		Expect(validator.Validate()).To(BeEmpty())
@@ -79,16 +94,17 @@ var _ = Describe("Validating network binding combinations", func() {
 
 var _ = Describe("Validating core binding", func() {
 	It("should reject a masquerade interface on a network different than pod", func() {
-		spec := &v1.VirtualMachineInstanceSpec{}
-		spec.Domain.Devices.Interfaces = []v1.Interface{{
-			Name:                   "default",
-			InterfaceBindingMethod: v1.InterfaceBindingMethod{Masquerade: &v1.InterfaceMasquerade{}},
-			Ports:                  []v1.Port{{Name: "test"}},
-		}}
-		spec.Networks = []v1.Network{{
-			Name:          "default",
-			NetworkSource: v1.NetworkSource{Multus: &v1.MultusNetwork{NetworkName: "test"}},
-		}}
+		spec := &libvmi.New(
+			libvmi.WithName("testvmi"),
+			libvmi.WithInterface(v1.Interface{
+				Name:                   "default",
+				InterfaceBindingMethod: v1.InterfaceBindingMethod{Masquerade: &v1.InterfaceMasquerade{}},
+			}),
+			libvmi.WithNetwork(&v1.Network{
+				Name:          "default",
+				NetworkSource: v1.NetworkSource{Multus: &v1.MultusNetwork{NetworkName: "test"}},
+			}),
+		).Spec
 
 		validator := admitter.NewValidator(k8sfield.NewPath("fake"), spec, stubClusterConfigChecker{})
 		causes := validator.Validate()
@@ -101,15 +117,14 @@ var _ = Describe("Validating core binding", func() {
 	})
 
 	It("should reject a masquerade interface with a specified reserved MAC address", func() {
-		spec := &v1.VirtualMachineInstanceSpec{}
-		spec.Domain.Devices.Interfaces = []v1.Interface{{
-			Name:                   "default",
-			InterfaceBindingMethod: v1.InterfaceBindingMethod{Masquerade: &v1.InterfaceMasquerade{}},
-			MacAddress:             "02:00:00:00:00:00",
-		}}
-		spec.Networks = []v1.Network{
-			{Name: "default", NetworkSource: v1.NetworkSource{Pod: &v1.PodNetwork{}}},
-		}
+		spec := &libvmi.New(
+			libvmi.WithNetwork(v1.DefaultPodNetwork()),
+			libvmi.WithInterface(v1.Interface{
+				Name:                   "default",
+				InterfaceBindingMethod: v1.InterfaceBindingMethod{Masquerade: &v1.InterfaceMasquerade{}},
+				MacAddress:             "02:00:00:00:00:00",
+			}),
+		).Spec
 
 		validator := admitter.NewValidator(k8sfield.NewPath("fake"), spec, stubClusterConfigChecker{})
 		causes := validator.Validate()
@@ -122,9 +137,10 @@ var _ = Describe("Validating core binding", func() {
 	})
 
 	It("should reject a bridge interface on a pod network when it is not permitted", func() {
-		spec := &v1.VirtualMachineInstanceSpec{}
-		spec.Domain.Devices.Interfaces = []v1.Interface{*v1.DefaultBridgeNetworkInterface()}
-		spec.Networks = []v1.Network{*v1.DefaultPodNetwork()}
+		spec := &libvmi.New(
+			libvmi.WithInterface(*v1.DefaultBridgeNetworkInterface()),
+			libvmi.WithNetwork(v1.DefaultPodNetwork()),
+		).Spec
 
 		validator := admitter.NewValidator(k8sfield.NewPath("fake"), spec, stubClusterConfigChecker{})
 		causes := validator.Validate()
